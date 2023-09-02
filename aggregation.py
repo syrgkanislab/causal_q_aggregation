@@ -2,6 +2,7 @@ import numpy as np
 from sklearn.model_selection import GridSearchCV, train_test_split, KFold
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.base import clone
 import scipy
 from datasets import fetch_data_generator
 
@@ -109,8 +110,7 @@ def gen_data(dgp, *, n=None, semi_synth=False, simple_synth=False,
 
 
 def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
-               scale=1, true_f=None, max_depth=3, random_state=123,
-               train_on_val=True, cfit_on_val=False):
+               scale=1, true_f=None, max_depth=3, random_state=123):
 
     np.random.seed(random_state)
     dtrain, dval, dtest, cate = gen_data(dgp, n=n, semi_synth=semi_synth, simple_synth=simple_synth,
@@ -121,7 +121,7 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
     Ztest, _, _ = dtest
 
     param_grid = {
-        'max_depth': [2, 5, 9],
+        'max_depth': [2, 5, 7],
         'min_samples_leaf': [20, 50]
     }
     reg = lambda: GridSearchCV(RandomForestRegressor(random_state=123), param_grid)
@@ -179,51 +179,58 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
     ####################################################
     ### Evaluate on validation and construct ensemble
     ####################################################
-    if train_on_val:
-        if cfit_on_val:
-            m = np.zeros(Zval.shape[0])
-            g1preds = np.zeros(Zval.shape[0])
-            g0preds = np.zeros(Zval.shape[0])
-            for train, test in KFold(n_splits=5).split(Zval, Yval):
-                g0val = reg().fit(Zval[train][Dval[train]==0], Yval[train][Dval[train]==0])
-                g1val = reg().fit(Zval[train][Dval[train]==1], Yval[train][Dval[train]==1])
-                muval = clf().fit(Zval[train], Dval[train])
-                m[test] = muval.predict_proba(Zval[test])[:, 1]
-                g1preds[test] = g1val.predict(Zval[test])
-                g0preds[test] = g0val.predict(Zval[test])
+    weightsQ, weightsBest = {}, {}
+    for name, train_on_val, cfit_on_val in [('train', False, False),
+                                            ('val', True, False), 
+                                            ('cfit', True, True)]:
+        if train_on_val:
+            g0best = clone(g0.best_estimator_)
+            g1best = clone(g1.best_estimator_)
+            mubest = clone(mu.best_estimator_)
+            if cfit_on_val:
+                m = np.zeros(Zval.shape[0])
+                g1preds = np.zeros(Zval.shape[0])
+                g0preds = np.zeros(Zval.shape[0])
+                for train, test in KFold(n_splits=5).split(Zval, Yval):
+                    g0val = g0best.fit(Zval[train][Dval[train]==0], Yval[train][Dval[train]==0])
+                    g1val = g1best.fit(Zval[train][Dval[train]==1], Yval[train][Dval[train]==1])
+                    muval = mubest.fit(Zval[train], Dval[train])
+                    m[test] = muval.predict_proba(Zval[test])[:, 1]
+                    g1preds[test] = g1val.predict(Zval[test])
+                    g0preds[test] = g0val.predict(Zval[test])
+            else:
+                g0val = g0best.fit(Zval[Dval==0], Yval[Dval==0])
+                g1val = g1best.fit(Zval[Dval==1], Yval[Dval==1])
+                muval = mubest.fit(Zval, Dval)
+                m = muval.predict_proba(Zval)[:, 1]
+                g1preds = g1val.predict(Zval)
+                g0preds = g0val.predict(Zval)
         else:
-            g0val = reg().fit(Zval[Dval==0], Yval[Dval==0])
-            g1val = reg().fit(Zval[Dval==1], Yval[Dval==1])
-            muval = clf().fit(Zval, Dval)
-            m = muval.predict_proba(Zval)[:, 1]
-            g1preds = g1val.predict(Zval)
-            g0preds = g0val.predict(Zval)
-    else:
+            m = mu.predict_proba(Zval)[:, 1]
+            g1preds = g1.predict(Zval)
+            g0preds = g0.predict(Zval)
+
+        # DR-Score target labels
+        cov = np.clip(m * (1 - m), 1e-12, np.inf)
+        gpreds = g1preds * Dval + g0preds * (1 - Dval)
+        Ydrval = (Yval - gpreds) * (Dval - m) / cov + g1preds - g0preds
+
+        t0 = tau0.predict(Zval)
+        t1 = tau1.predict(Zval)
+        tT = g1.predict(Zval) - g0.predict(Zval)
+        tS = g.predict(np.hstack([np.ones((Zval.shape[0], 1)), Zval]))
+        tS -= g.predict(np.hstack([np.zeros((Zval.shape[0], 1)), Zval]))
+        tIPS = tauIPS.predict(Zval)
+        tDR = tauDR.predict(Zval)
+        tR = tauR.predict(Zval)
         m = mu.predict_proba(Zval)[:, 1]
-        g1preds = g1.predict(Zval)
-        g0preds = g0.predict(Zval)
+        tX = t1 * (1 - m) + t0 * m
+        tDRX = tauDRX.predict(Zval)
 
-    # DR-Score target labels
-    cov = np.clip(m * (1 - m), 1e-12, np.inf)
-    gpreds = g1preds * Dval + g0preds * (1 - Dval)
-    Ydrval = (Yval - gpreds) * (Dval - m) / cov + g1preds - g0preds
-
-    t0 = tau0.predict(Zval)
-    t1 = tau1.predict(Zval)
-    tT = g1.predict(Zval) - g0.predict(Zval)
-    tS = g.predict(np.hstack([np.ones((Zval.shape[0], 1)), Zval]))
-    tS -= g.predict(np.hstack([np.zeros((Zval.shape[0], 1)), Zval]))
-    tIPS = tauIPS.predict(Zval)
-    tDR = tauDR.predict(Zval)
-    tR = tauR.predict(Zval)
-    m = mu.predict_proba(Zval)[:, 1]
-    tX = t1 * (1 - m) + t0 * m
-    tDRX = tauDRX.predict(Zval)
-
-    F = np.stack((tT, tS, tIPS, tDR, tR, tX, tDRX), -1)
-    weightsQ = qagg(F, Ydrval)
-    weightsBest = np.zeros(weightsQ.shape)
-    weightsBest[np.argmin(np.mean((Ydrval.reshape(-1, 1) - F)**2, axis=0))] = 1.0
+        F = np.stack((tT, tS, tIPS, tDR, tR, tX, tDRX), -1)
+        weightsQ[name] = qagg(F, Ydrval)
+        weightsBest[name] = np.zeros(weightsQ[name].shape)
+        weightsBest[name][np.argmin(np.mean((Ydrval.reshape(-1, 1) - F)**2, axis=0))] = 1.0
     
     ####################################################
     # Final evaluation on test set
@@ -239,20 +246,14 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
     m = mu.predict_proba(Ztest)[:, 1]
     tX = t1 * (1 - m) + t0 * m
     tDRX = tauDRX.predict(Ztest)
-    F = np.stack((tT, tS, tIPS, tDR, tR, tX, tDRX), -1)
-    tQ = F @ weightsQ
-    tBest = F @ weightsBest
 
     mses = {'T': mse(cate(Ztest), tT),
-               'S': mse(cate(Ztest), tS),
-               'IPS': mse(cate(Ztest), tIPS),
-               'DR': mse(cate(Ztest), tDR),
-               'R': mse(cate(Ztest), tR),
-               'X': mse(cate(Ztest), tX),
-               'DRX': mse(cate(Ztest), tDRX),
-               'Q': mse(cate(Ztest), tQ),
-               'B': mse(cate(Ztest), tBest)}
-
+            'S': mse(cate(Ztest), tS),
+            'IPS': mse(cate(Ztest), tIPS),
+            'DR': mse(cate(Ztest), tDR),
+            'R': mse(cate(Ztest), tR),
+            'X': mse(cate(Ztest), tX),
+            'DRX': mse(cate(Ztest), tDRX)}
     cates = {'T': tT,
             'S': tS,
             'IPS': tIPS,
@@ -260,9 +261,16 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
             'R': tR,
             'X': tX,
             'DRX': tDRX,
-            'Q': tQ,
-            'B': tBest,
             'True': cate(Ztest),
             'Ztest': Ztest}
+
+    F = np.stack((tT, tS, tIPS, tDR, tR, tX, tDRX), -1)
+    for name in ['train', 'val', 'cfit']:
+        tQ = F @ weightsQ[name]
+        tBest = F @ weightsBest[name]
+        mses[f'Q{name}'] = mse(cate(Ztest), tQ)
+        mses[f'Best{name}'] = mse(cate(Ztest), tBest)
+        cates[f'Q{name}'] = tQ
+        cates[f'Best{name}'] = tBest
 
     return mses, cates
