@@ -265,6 +265,9 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
             'Ztest': Ztest}
 
     F = np.stack((tT, tS, tIPS, tDR, tR, tX, tDRX), -1)
+    tUniform = F @ np.ones(F.shape[1]) / F.shape[1]
+    mses['Uni'] = mse(cate(Ztest), tUniform)
+    cates['Uni'] = tUniform
     for name in ['train', 'val', 'cfit']:
         tQ = F @ weightsQ[name]
         tBest = F @ weightsBest[name]
