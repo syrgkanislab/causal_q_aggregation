@@ -1,3 +1,4 @@
+from sys import meta_path
 import numpy as np
 from numpy.lib.ufunclike import isposinf
 from sklearn.model_selection import GridSearchCV, train_test_split, KFold
@@ -212,6 +213,70 @@ class MetaLearners:
         return np.stack((tT, tS, tIPS, tDR, tR, tX, tDRX), -1)
 
 
+class Ensemble:
+
+    def __init__(self, *, meta, train_on_val=True, cfit_on_val=False, three_way=False):
+        self.meta = meta
+        self.train_on_val = train_on_val
+        self.cfit_on_val = cfit_on_val
+        self.three_way = three_way
+
+    def fit(self, Zval, Dval, Yval):
+        meta = self.meta
+        if self.train_on_val:
+            g0best = clone(meta.g0.best_estimator_)
+            g1best = clone(meta.g1.best_estimator_)
+            mubest = clone(meta.mu.best_estimator_)
+            if self.cfit_on_val:
+                m = np.zeros(Zval.shape[0])
+                g1preds = np.zeros(Zval.shape[0])
+                g0preds = np.zeros(Zval.shape[0])
+                for train, test in KFold(n_splits=5).split(Zval, Yval):
+                    nt = len(train)
+                    regfold = train[nt // 2:] if self.three_way == 2 else train
+                    rrfold = train[:nt // 2] if self.three_way == 2 else train
+                    g0val = g0best.fit(
+                        Zval[regfold][Dval[regfold] == 0], Yval[regfold][Dval[regfold] == 0])
+                    g1val = g1best.fit(
+                        Zval[regfold][Dval[regfold] == 1], Yval[regfold][Dval[regfold] == 1])
+                    muval = mubest.fit(Zval[rrfold], Dval[rrfold])
+                    m[test] = muval.predict_proba(Zval[test])[:, 1]
+                    g1preds[test] = g1val.predict(Zval[test])
+                    g0preds[test] = g0val.predict(Zval[test])
+            else:
+                g0val = g0best.fit(Zval[Dval == 0], Yval[Dval == 0])
+                g1val = g1best.fit(Zval[Dval == 1], Yval[Dval == 1])
+                muval = mubest.fit(Zval, Dval)
+                m = muval.predict_proba(Zval)[:, 1]
+                g1preds = g1val.predict(Zval)
+                g0preds = g0val.predict(Zval)
+        else:
+            m = meta.mu.predict_proba(Zval)[:, 1]
+            g1preds = meta.g1.predict(Zval)
+            g0preds = meta.g0.predict(Zval)
+
+        # DR-Score target labels
+        cov = np.clip(m * (1 - m), 1e-12, np.inf)
+        gpreds = g1preds * Dval + g0preds * (1 - Dval)
+        Ydrval = (Yval - gpreds) * (Dval - m) / cov + g1preds - g0preds
+
+        F = meta.predict(Zval)
+        self.weightsQ_ = qagg(F, Ydrval)
+        self.weightsBest_ = np.zeros(self.weightsQ_.shape)
+        self.weightsBest_[np.argmin(
+            np.mean((Ydrval.reshape(-1, 1) - F)**2, axis=0))] = 1.0
+
+        return self
+
+    def predictQ(self, Ztest):
+        F = self.meta.predict(Ztest)
+        return F @ self.weightsQ_
+
+    def predictBest(self, Ztest):
+        F = self.meta.predict(Ztest)
+        return F @ self.weightsBest_
+
+
 def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
                scale=1, true_f=None, max_depth=3, random_state=123):
 
@@ -235,64 +300,33 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
     #############################################
     # Train on training set all meta-learners
     #############################################
+    print('Fitting meta learners on dtrain')
     meta = MetaLearners(reg, clf).fit(Z, D, Y)
 
     ####################################################
     # Evaluate on validation and construct ensemble
     ####################################################
-    weightsQ, weightsBest = {}, {}
-    for name, train_on_val, cfit_on_val in [('train', False, False),
-                                            ('val', True, False),
-                                            ('cfit', True, True)]:
-        if train_on_val:
-            g0best = clone(meta.g0.best_estimator_)
-            g1best = clone(meta.g1.best_estimator_)
-            mubest = clone(meta.mu.best_estimator_)
-            if cfit_on_val:
-                m = np.zeros(Zval.shape[0])
-                g1preds = np.zeros(Zval.shape[0])
-                g0preds = np.zeros(Zval.shape[0])
-                for train, test in KFold(n_splits=5).split(Zval, Yval):
-                    g0val = g0best.fit(
-                        Zval[train][Dval[train] == 0], Yval[train][Dval[train] == 0])
-                    g1val = g1best.fit(
-                        Zval[train][Dval[train] == 1], Yval[train][Dval[train] == 1])
-                    muval = mubest.fit(Zval[train], Dval[train])
-                    m[test] = muval.predict_proba(Zval[test])[:, 1]
-                    g1preds[test] = g1val.predict(Zval[test])
-                    g0preds[test] = g0val.predict(Zval[test])
-            else:
-                g0val = g0best.fit(Zval[Dval == 0], Yval[Dval == 0])
-                g1val = g1best.fit(Zval[Dval == 1], Yval[Dval == 1])
-                muval = mubest.fit(Zval, Dval)
-                m = muval.predict_proba(Zval)[:, 1]
-                g1preds = g1val.predict(Zval)
-                g0preds = g0val.predict(Zval)
-        else:
-            m = meta.mu.predict_proba(Zval)[:, 1]
-            g1preds = meta.g1.predict(Zval)
-            g0preds = meta.g0.predict(Zval)
-
-        # DR-Score target labels
-        cov = np.clip(m * (1 - m), 1e-12, np.inf)
-        gpreds = g1preds * Dval + g0preds * (1 - Dval)
-        Ydrval = (Yval - gpreds) * (Dval - m) / cov + g1preds - g0preds
-
-        F = meta.predict(Zval)
-        weightsQ[name] = qagg(F, Ydrval)
-        weightsBest[name] = np.zeros(weightsQ[name].shape)
-        weightsBest[name][np.argmin(
-            np.mean((Ydrval.reshape(-1, 1) - F)**2, axis=0))] = 1.0
+    ensemble = {}
+    for name, train_on_val, cfit_on_val, three_way in [('train', False, False, False),
+                                                       ('val', True, False, False),
+                                                       ('cfit', True, True, False),
+                                                       ('3way', True, True, True)]:
+        print(f'Fitting ensemble {name} on dval')
+        ensemble[name] = Ensemble(
+            meta=meta, train_on_val=train_on_val, cfit_on_val=cfit_on_val, three_way=three_way)
+        ensemble[name].fit(Zval, Dval, Yval)
 
     ####################################################
     # Meta learners on all dtrain and dval
     ####################################################
+    print('Fitting meta learners on dtrain union dval')
     meta_all = MetaLearners(reg, clf).fit(
         np.vstack([Z, Zval]), np.concatenate((D, Dval)), np.concatenate((Y, Yval)))
 
     ####################################################
     # Final evaluation on test set
     ####################################################
+    print('Evaluating all models on dtest')
     F = meta.predict(Ztest)
 
     mses = {'T': mse(cate(Ztest), F[:, 0]),
@@ -315,9 +349,9 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
     tUniform = F @ np.ones(F.shape[1]) / F.shape[1]
     mses['Uni'] = mse(cate(Ztest), tUniform)
     cates['Uni'] = tUniform
-    for name in ['train', 'val', 'cfit']:
-        tQ = F @ weightsQ[name]
-        tBest = F @ weightsBest[name]
+    for name in ['train', 'val', 'cfit', '3way']:
+        tQ = ensemble[name].predictQ(Ztest)
+        tBest = ensemble[name].predictBest(Ztest)
         mses[f'Q{name}'] = mse(cate(Ztest), tQ)
         mses[f'Best{name}'] = mse(cate(Ztest), tBest)
         cates[f'Q{name}'] = tQ
