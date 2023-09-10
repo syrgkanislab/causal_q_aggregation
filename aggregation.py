@@ -44,7 +44,7 @@ def qagg(F, y):
 
 
 def mse(y, yhat):
-    return np.mean((y - yhat)**2)
+    return np.mean((y.flatten() - yhat.flatten())**2)
 
 
 def get_dgp(dgp):
@@ -493,9 +493,18 @@ def experiment_dr(dgp, *, n=None, semi_synth=False, simple_synth=False,
         cates[f'Q{name}'] = tQ[subsample]
         cates[f'Best{name}'] = tBest[subsample]
         if g0 is not None:
-            nuisance_metrics[name] = {'g0': mse(g0(ensemble_model.Zval), ensemble_model.g0preds),
-                                      'g1': mse(g1(ensemble_model.Zval), ensemble_model.g1preds),
-                                      'mu': mse(mu(ensemble_model.Zval), ensemble_model.mupreds)}
+            nuisance_subsample = np.sort(
+                np.random.choice(ensemble_model.Zval.shape[0], 100))
+            nuisance_metrics[name] = {'g0mse': mse(g0(ensemble_model.Zval), ensemble_model.g0preds),
+                                      'g1mse': mse(g1(ensemble_model.Zval), ensemble_model.g1preds),
+                                      'mumse': mse(mu(ensemble_model.Zval), ensemble_model.mupreds),
+                                      'g0': ensemble_model.g0preds[nuisance_subsample],
+                                      'g1': ensemble_model.g1preds[nuisance_subsample],
+                                      'mu': ensemble_model.mupreds[nuisance_subsample],
+                                      'g0true': g0(ensemble_model.Zval[nuisance_subsample]),
+                                      'g1true': g1(ensemble_model.Zval[nuisance_subsample]),
+                                      'mutrue': mu(ensemble_model.Zval[nuisance_subsample]),
+                                      'Zval': ensemble_model.Zval[nuisance_subsample]}
 
     return mses, cates, nuisance_metrics
 
