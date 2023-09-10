@@ -580,7 +580,8 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
              'DRX': F[subsample, 6],
              'True': cate(Ztest[subsample]),
              'Ztest': Ztest[subsample]}
-
+    nuisance_metrics = {}
+    
     tUniform = F @ np.ones(F.shape[1]) / F.shape[1]
     mses['Uni'] = mse(cate(Ztest), tUniform)
     cates['Uni'] = tUniform[subsample]
@@ -591,6 +592,19 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
         mses[f'Best{name}'] = mse(cate(Ztest), tBest)
         cates[f'Q{name}'] = tQ[subsample]
         cates[f'Best{name}'] = tBest[subsample]
+        if g0 is not None:
+            nuisance_subsample = np.sort(
+                np.random.choice(ensemble_model.Zval.shape[0], 100))
+            nuisance_metrics[name] = {'g0mse': mse(g0(ensemble_model.Zval), ensemble_model.g0preds),
+                                      'g1mse': mse(g1(ensemble_model.Zval), ensemble_model.g1preds),
+                                      'mumse': mse(mu(ensemble_model.Zval), ensemble_model.mupreds),
+                                      'g0': ensemble_model.g0preds[nuisance_subsample],
+                                      'g1': ensemble_model.g1preds[nuisance_subsample],
+                                      'mu': ensemble_model.mupreds[nuisance_subsample],
+                                      'g0true': g0(ensemble_model.Zval[nuisance_subsample]),
+                                      'g1true': g1(ensemble_model.Zval[nuisance_subsample]),
+                                      'mutrue': mu(ensemble_model.Zval[nuisance_subsample]),
+                                      'Zval': ensemble_model.Zval[nuisance_subsample]}
 
     F = meta_all.predict(Ztest)
     mses = {**mses,
@@ -610,4 +624,4 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
              'Xall': F[subsample, 5],
              'DRXall': F[subsample, 6]}
 
-    return mses, cates
+    return mses, cates, nuisance_metrics
