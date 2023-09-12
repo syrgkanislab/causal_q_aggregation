@@ -216,6 +216,14 @@ class MetaLearners:
         Ydr = (Y - gpreds) * (D - m) / cov + g1preds - g0preds
         self.tauDRX = reg().fit(Z, Ydr)
 
+        # DAX-Learner
+        # correcting for covariate shift in CATE model estimation in X-Learner
+        m = self.mu.predict_proba(Z)[:, 1]
+        g0da = reg().fit(Z[D==0], Y[D==0], sample_weight=(1 - m[D==0]))
+        g1da = reg().fit(Z[D==1], Y[D==1], sample_weight=m[D==1])
+        self.tau0da = wreg().fit(Z[D==0], g1da.predict(Z[D==0]) - Y[D==0], sample_weight=m[D==0]**2 / (1 - m[D==0]))
+        self.tau1da = wreg().fit(Z[D==1], Y[D==1] - g0da.predict(Z[D==1]), sample_weight=(1 - m[D==1])**2 / m[D==1])
+
         return self
 
     def predict(self, Z):
@@ -232,12 +240,15 @@ class MetaLearners:
         m = self.mu.predict_proba(Z)[:, 1]
         tX = t1 * (1 - m) + t0 * m
         tDRX = self.tauDRX.predict(Z)
+        t0da = self.tau0da.predict(Z)
+        t1da = self.tau1da.predict(Z)
+        tXda = t1da * (1 - m) + t0da * m
 
-        return np.stack((tT, tS, tIPS, tDR, tR, tX, tDRX), -1)
+        return np.stack((tT, tS, tIPS, tDR, tR, tX, tDRX, tXda), -1)
     
     def get_prior(self, prior_dict):
         prior = np.zeros(7)
-        for it, name in enumerate(['T', 'S', 'IPS', 'DR', 'R', 'X', 'DRX']):
+        for it, name in enumerate(['T', 'S', 'IPS', 'DR', 'R', 'X', 'DRX', 'DAX']):
             prior[it] = prior_dict[name]
         return prior
 
@@ -393,6 +404,7 @@ def experiment_dr(dgp, *, n=None, semi_synth=False, simple_synth=False,
                   scale=1, true_f=None, max_depth=3, random_state=123,
                   reg=xgb_reg,
                   clf=xgb_clf,
+                  ensemble_methods=['train', 'val', 'split', 'cfit', '3way'],
                   model_select=False):
     print(random_state)
     np.random.seed(random_state)
@@ -482,6 +494,10 @@ def experiment_dr(dgp, *, n=None, semi_synth=False, simple_synth=False,
                                 ('split', 'split_on_val'),
                                 ('cfit', 'cfit_on_val'),
                                 ('3way', '3way')]:
+
+        if name not in ensemble_methods:
+            continue
+
         print(f'Fitting ensemble {name} on dval')
         ensemble[name] = Ensemble(
             meta=meta, nuisance_mode=nuisance_mode, model_select=model_select)
@@ -612,7 +628,8 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
             'DR': mse(cate(Ztest), F[:, 3]),
             'R': mse(cate(Ztest), F[:, 4]),
             'X': mse(cate(Ztest), F[:, 5]),
-            'DRX': mse(cate(Ztest), F[:, 6])}
+            'DRX': mse(cate(Ztest), F[:, 6]),
+            'DAX': mse(cate(Ztest), F[:, 7])}
     cates = {'T': F[subsample, 0],
              'S': F[subsample, 1],
              'IPS': F[subsample, 2],
@@ -620,6 +637,7 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
              'R': F[subsample, 4],
              'X': F[subsample, 5],
              'DRX': F[subsample, 6],
+             'DAX': F[subsample, 7],
              'True': cate(Ztest[subsample]),
              'Ztest': Ztest[subsample]}
     nuisance_metrics = {}
@@ -659,7 +677,8 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
             'DRall': mse(cate(Ztest), F[:, 3]),
             'Rall': mse(cate(Ztest), F[:, 4]),
             'Xall': mse(cate(Ztest), F[:, 5]),
-            'DRXall': mse(cate(Ztest), F[:, 6])}
+            'DRXall': mse(cate(Ztest), F[:, 6]),
+            'DAXall': mse(cate(Ztest), F[:, 7])}
     cates = {**cates,
              'Tall': F[subsample, 0],
              'Sall': F[subsample, 1],
@@ -667,6 +686,7 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
              'DRall': F[subsample, 3],
              'Rall': F[subsample, 4],
              'Xall': F[subsample, 5],
-             'DRXall': F[subsample, 6]}
+             'DRXall': F[subsample, 6],
+             'DAXall': F[subsample, 7]}
 
     return mses, cates, nuisance_metrics
