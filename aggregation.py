@@ -46,7 +46,7 @@ def opt(K, qfunction, grad_q):
     res = scipy.optimize.minimize(qfunction, np.ones(K) / K, jac=grad_q, bounds=[(0, 1)] * K,
                                   constraints=scipy.optimize.LinearConstraint(
                                       np.ones((1, K)), lb=1, ub=1),
-                                  tol=1e-12)
+                                  tol=1e-16)
     return res.x
 
 
@@ -219,8 +219,8 @@ class MetaLearners:
         # DAX-Learner
         # correcting for covariate shift in CATE model estimation in X-Learner
         m = self.mu.predict_proba(Z)[:, 1]
-        g0da = reg().fit(Z[D==0], Y[D==0], sample_weight=(1 - m[D==0]))
-        g1da = reg().fit(Z[D==1], Y[D==1], sample_weight=m[D==1])
+        g0da = wreg().fit(Z[D==0], Y[D==0], sample_weight=(1 - m[D==0]))
+        g1da = wreg().fit(Z[D==1], Y[D==1], sample_weight=m[D==1])
         self.tau0da = wreg().fit(Z[D==0], g1da.predict(Z[D==0]) - Y[D==0], sample_weight=m[D==0]**2 / (1 - m[D==0]))
         self.tau1da = wreg().fit(Z[D==1], Y[D==1] - g0da.predict(Z[D==1]), sample_weight=(1 - m[D==1])**2 / m[D==1])
 

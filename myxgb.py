@@ -35,14 +35,14 @@ def weighted_metric(predt: np.ndarray, dtrain: xgb.DMatrix) -> Tuple[str, float]
 class MyXGBRegressor(XGBRegressor):
     
     def fit(self, X, y):
-        X, Xval, y, yval = train_test_split(X, y, shuffle=True, test_size=.2)
+        X, Xval, y, yval = train_test_split(X, y, shuffle=True, test_size=.2, random_state=self.random_state)
         super().fit(X, y, eval_set=[(Xval, yval)], verbose=False)
         return self
 
 class MyXGBClassifier(XGBClassifier):
     
     def fit(self, X, y):
-        X, Xval, y, yval = train_test_split(X, y, shuffle=True, test_size=.2, stratify=y)
+        X, Xval, y, yval = train_test_split(X, y, shuffle=True, test_size=.2, stratify=y, random_state=self.random_state)
         super().fit(X, y, eval_set=[(Xval, yval)], verbose=False)
         return self
 
@@ -51,26 +51,51 @@ class MyXGBClassifier(XGBClassifier):
 
 class MyWeightedΧGBRegressor(BaseEstimator):
     
-    def __init__(self):
+    def __init__(self, *, max_depth=2, learning_rate=.05, n_estimators=500,
+                early_stopping_rounds=5, min_child_weight=20,
+                verbosity=0, random_state=123):
+        self.max_depth = max_depth
+        self.learning_rate = learning_rate
+        self.n_estimators = n_estimators
+        self.early_stopping_rounds = early_stopping_rounds
+        self.min_child_weight = min_child_weight
+        self.verbosity = verbosity
+        self.random_state = random_state
         return
+
     def fit(self, X, y, *, sample_weight):
         X, Xval, y, yval, sample_weight, sample_weight_val = train_test_split(X, y, sample_weight,
-                                                                              shuffle=True, test_size=.2)
+                                                                              shuffle=True, test_size=.2,
+                                                                              random_state=self.random_state)
         dtrain = xgb.DMatrix(X, y, weight=sample_weight)
         dval = xgb.DMatrix(Xval, yval, weight=sample_weight_val)
-        self.model = xgb.train({'max_depth': 2, 'learning_rate': .05, 'min_child_weight': 20,
-                                'disable_default_eval_metric': 1, 'seed': 123},
-                              dtrain, num_boost_round=500, evals=[(dval, 'val')], obj=weighted_squared,
-                              custom_metric=weighted_metric, early_stopping_rounds=5, verbose_eval=False)
+        self.model = xgb.train({'max_depth': self.max_depth,
+                                'learning_rate': self.learning_rate, 
+                                'min_child_weight': self.min_child_weight,
+                                'disable_default_eval_metric': 1,
+                                'seed': self.random_state},
+                              dtrain, num_boost_round=self.n_estimators,
+                              evals=[(dval, 'val')],
+                              obj=weighted_squared,
+                              custom_metric=weighted_metric,
+                              early_stopping_rounds=self.early_stopping_rounds,
+                              verbose_eval=(self.verbosity > 0))
         return self
 
     def predict(self, X):
         return self.model.predict(xgb.DMatrix(X))
 
-xgb_reg = lambda: MyXGBRegressor(max_depth=2, learning_rate=.05, n_estimators=500,
-                             early_stopping_rounds=5, min_child_weight=20,
-                             verbosity=0, random_state=123)
-xgb_clf = lambda: MyXGBClassifier(max_depth=2, learning_rate=.05, n_estimators=500,
-                              early_stopping_rounds=5, min_child_weight=20, verbosity=0,
-                              random_state=123)
-xgb_wreg = lambda: MyWeightedΧGBRegressor()
+def xgb_reg(random_state=123):
+    return MyXGBRegressor(max_depth=2, learning_rate=.05, n_estimators=500,
+                          early_stopping_rounds=5, min_child_weight=20,
+                          verbosity=0, random_state=random_state)
+
+def xgb_clf(random_state=123):
+    return MyXGBClassifier(max_depth=2, learning_rate=.05, n_estimators=500,
+                           early_stopping_rounds=5, min_child_weight=20, verbosity=0,
+                           random_state=random_state)
+
+def xgb_wreg(random_state=123):
+    return MyWeightedΧGBRegressor(max_depth=2, learning_rate=.05, n_estimators=500,
+                                  early_stopping_rounds=5, min_child_weight=20, verbosity=0,
+                                  random_state=random_state)
