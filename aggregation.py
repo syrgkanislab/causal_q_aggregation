@@ -46,7 +46,7 @@ def opt(K, qfunction, grad_q):
     res = scipy.optimize.minimize(qfunction, np.ones(K) / K, jac=grad_q, bounds=[(0, 1)] * K,
                                   constraints=scipy.optimize.LinearConstraint(
                                       np.ones((1, K)), lb=1, ub=1),
-                                  tol=1e-16)
+                                  tol=1e-14)
     return res.x
 
 
