@@ -102,5 +102,5 @@ def xgb_clf(random_state=123):
 
 def xgb_wreg(random_state=123):
     return MyWeightedΧGBRegressor(max_depth=2, learning_rate=.05, n_estimators=500,
-                                  early_stopping_rounds=5, min_child_weight=20, verbosity=1,
+                                  early_stopping_rounds=5, min_child_weight=20, verbosity=0,
                                   random_state=random_state)
