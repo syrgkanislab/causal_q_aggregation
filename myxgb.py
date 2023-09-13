@@ -34,15 +34,9 @@ def weighted_metric(predt: np.ndarray, dtrain: xgb.DMatrix) -> Tuple[str, float]
 
 class MyXGBRegressor(XGBRegressor):
     
-    def fit(self, X, y, sample_weight=None):
-        if sample_weight is None:
-            X, Xval, y, yval = train_test_split(X, y, shuffle=True, test_size=.2)
-            super().fit(X, y, eval_set=[(Xval, yval)], verbose=False)
-        else:
-            X, Xval, y, yval, sample_weight, sample_weight_val = train_test_split(X, y, sample_weight,
-                                                                                  shuffle=True, test_size=.2)
-            super().fit(X, y, sample_weight=sample_weight,
-                        eval_set=[(Xval, yval)], sample_weight_eval_set=[sample_weight_val], verbose=False)
+    def fit(self, X, y):
+        X, Xval, y, yval = train_test_split(X, y, shuffle=True, test_size=.2)
+        super().fit(X, y, eval_set=[(Xval, yval)], verbose=False)
         return self
 
 class MyXGBClassifier(XGBClassifier):
@@ -51,6 +45,9 @@ class MyXGBClassifier(XGBClassifier):
         X, Xval, y, yval = train_test_split(X, y, shuffle=True, test_size=.2, stratify=y)
         super().fit(X, y, eval_set=[(Xval, yval)], verbose=False)
         return self
+
+    def predict(self, X):
+        return self.predict_proba(X)[:, 1]
 
 class MyWeightedΧGBRegressor(BaseEstimator):
     
