@@ -6,6 +6,7 @@ import xgboost as xgb
 from typing import Tuple
 from sklearn.base import BaseEstimator
 from econml.sklearn_extensions.model_selection import WeightedKFold
+from sklearn.utils import check_X_y
 
 def gradient(predt: np.ndarray, dtrain: xgb.DMatrix) -> np.ndarray:
     '''Compute the gradient squared log error.'''
@@ -68,6 +69,7 @@ class MyWeightedΧGBRegressor(BaseEstimator):
         # X, Xval, y, yval, sample_weight, sample_weight_val = train_test_split(X, y, sample_weight,
         #                                                                       shuffle=True, test_size=.2,
         #                                                                       random_state=self.random_state)
+        X, y = check_X_y(X, y)
         kf = WeightedKFold(n_splits=5, shuffle=True, random_state=self.random_state)
         train, test = kf.split(X, y, sample_weight=sample_weight)[0]
         X, Xval, y, yval = X[train], X[test], y[train], y[test]
