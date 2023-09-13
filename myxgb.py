@@ -5,6 +5,7 @@ import numpy as np
 import xgboost as xgb
 from typing import Tuple
 from sklearn.base import BaseEstimator
+from econml.sklearn_extensions.model_selection import WeightedKFold
 
 def gradient(predt: np.ndarray, dtrain: xgb.DMatrix) -> np.ndarray:
     '''Compute the gradient squared log error.'''
@@ -64,9 +65,13 @@ class MyWeightedΧGBRegressor(BaseEstimator):
         return
 
     def fit(self, X, y, *, sample_weight):
-        X, Xval, y, yval, sample_weight, sample_weight_val = train_test_split(X, y, sample_weight,
-                                                                              shuffle=True, test_size=.2,
-                                                                              random_state=self.random_state)
+        # X, Xval, y, yval, sample_weight, sample_weight_val = train_test_split(X, y, sample_weight,
+        #                                                                       shuffle=True, test_size=.2,
+        #                                                                       random_state=self.random_state)
+        kf = WeightedKFold(n_splits=5, shuffle=True, random_state=self.random_state)
+        train, test = kf.split(X, y, sample_weight=sample_weight)[0]
+        X, Xval, y, yval = X[train], X[test], y[train], y[test]
+        sample_weight, sample_weight_val = sample_weight[train], sample_weight[test]
         dtrain = xgb.DMatrix(X, y, weight=sample_weight)
         dval = xgb.DMatrix(Xval, yval, weight=sample_weight_val)
         self.model = xgb.train({'max_depth': self.max_depth,
@@ -97,5 +102,5 @@ def xgb_clf(random_state=123):
 
 def xgb_wreg(random_state=123):
     return MyWeightedΧGBRegressor(max_depth=2, learning_rate=.05, n_estimators=500,
-                                  early_stopping_rounds=5, min_child_weight=20, verbosity=0,
+                                  early_stopping_rounds=5, min_child_weight=20, verbosity=1,
                                   random_state=random_state)
