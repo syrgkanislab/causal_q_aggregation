@@ -11,6 +11,8 @@ from sklearn.svm import SVR
 from sklearn.base import clone
 import scipy
 from datasets import fetch_data_generator
+from econml.grf import CausalForest, RegressionForest
+from myxgb import xgb_reg, xgb_clf, xgb_wreg
 
 
 def instance(nu, U, y, prior=None, beta=None):
@@ -44,13 +46,13 @@ def opt(K, qfunction, grad_q):
     res = scipy.optimize.minimize(qfunction, np.ones(K) / K, jac=grad_q, bounds=[(0, 1)] * K,
                                   constraints=scipy.optimize.LinearConstraint(
                                       np.ones((1, K)), lb=1, ub=1),
-                                  tol=1e-12)
+                                  tol=1e-14)
     return res.x
 
 
-def qagg(F, y, prior=None, beta=None):
+def qagg(F, y, *, nu=.5, prior=None, beta=None):
     scale = max(np.max(np.abs(F)), np.max(np.abs(y)))
-    loss, qfunction, grad_q, ploss = instance(.5, F.T / scale, y / scale, prior=prior, beta=beta)
+    loss, qfunction, grad_q, ploss = instance(nu, F.T / scale, y / scale, prior=prior, beta=beta)
     return opt(F.shape[1], qfunction, grad_q)
 
 
@@ -68,7 +70,7 @@ def get_dgp(dgp):
         def cate(z): return .5 * np.ones(z.shape)
 
     if dgp == 2:
-        # dgp that favors the dr-learner
+        # dgp that slightly favors the dr-learner over x-learner
         def prop(z): return .05 * np.ones(z.shape)
 
         def base(z): return .1 * (z <= .8) * (z >= .6)
@@ -153,13 +155,15 @@ def gen_data(dgp, *, n=None, semi_synth=False, simple_synth=False,
 
 class MetaLearners:
 
-    def __init__(self, reg, clf):
+    def __init__(self, reg, clf, wreg):
         self.reg = reg
         self.clf = clf
+        self.wreg = wreg
 
     def fit(self, Z, D, Y):
         reg = self.reg
         clf = self.clf
+        wreg = self.wreg
 
         self.g0 = reg().fit(Z[D == 0], Y[D == 0])
         self.g1 = reg().fit(Z[D == 1], Y[D == 1])
@@ -197,7 +201,7 @@ class MetaLearners:
         Dres = D - self.mu.predict_proba(Z)[:, 1]
         DresClip = np.clip(Dres, 1e-12, np.inf) * (Dres >= 0) + \
             np.clip(Dres, -np.inf, -1e-12) * (Dres < 0)
-        self.tauR = reg().fit(Z, Yres / DresClip, sample_weight=Dres**2)
+        self.tauR = wreg().fit(Z, Yres / DresClip, sample_weight=Dres**2)
 
         # DRX-Learner
         m = self.mu.predict_proba(Z)[:, 1]
@@ -212,6 +216,14 @@ class MetaLearners:
         Ydr = (Y - gpreds) * (D - m) / cov + g1preds - g0preds
         self.tauDRX = reg().fit(Z, Ydr)
 
+        # DAX-Learner
+        # correcting for covariate shift in CATE model estimation in X-Learner
+        m = self.mu.predict_proba(Z)[:, 1]
+        g0da = wreg().fit(Z[D==0], Y[D==0], sample_weight=(1 - m[D==0]))
+        g1da = wreg().fit(Z[D==1], Y[D==1], sample_weight=m[D==1])
+        self.tau0da = wreg().fit(Z[D==0], g1da.predict(Z[D==0]) - Y[D==0], sample_weight=m[D==0]**2 / (1 - m[D==0]))
+        self.tau1da = wreg().fit(Z[D==1], Y[D==1] - g0da.predict(Z[D==1]), sample_weight=(1 - m[D==1])**2 / m[D==1])
+
         return self
 
     def predict(self, Z):
@@ -223,17 +235,20 @@ class MetaLearners:
         tS = self.g.predict(np.hstack([np.ones((Z.shape[0], 1)), Z]))
         tS -= self.g.predict(np.hstack([np.zeros((Z.shape[0], 1)), Z]))
         tIPS = self.tauIPS.predict(Z)
-        tDR = self.tauDR.predict(Z)
-        tR = self.tauR.predict(Z)
+        tDR = self.tauDR.predict(Z).flatten()
+        tR = self.tauR.predict(Z).flatten()
         m = self.mu.predict_proba(Z)[:, 1]
         tX = t1 * (1 - m) + t0 * m
         tDRX = self.tauDRX.predict(Z)
+        t0da = self.tau0da.predict(Z)
+        t1da = self.tau1da.predict(Z)
+        tXda = t1da * (1 - m) + t0da * m
 
-        return np.stack((tT, tS, tIPS, tDR, tR, tX, tDRX), -1)
+        return np.stack((tT, tS, tIPS, tDR, tR, tX, tDRX, tXda), -1)
     
     def get_prior(self, prior_dict):
         prior = np.zeros(7)
-        for it, name in enumerate(['T', 'S', 'IPS', 'DR', 'R', 'X', 'DRX']):
+        for it, name in enumerate(['T', 'S', 'IPS', 'DR', 'R', 'X', 'DRX', 'DAX']):
             prior[it] = prior_dict[name]
         return prior
 
@@ -363,6 +378,7 @@ class Ensemble:
         self.weightsBest_ = np.zeros(self.weightsQ_.shape)
         self.weightsBest_[np.argmin(
             np.mean((Ydrval.reshape(-1, 1) - F)**2, axis=0))] = 1.0
+        self.weightsConvex_ = qagg(F, Ydrval, prior=self.prior, beta=self.beta, nu=0)
 
         self.Zval = Zval.copy()
         self.g1preds = g1preds
@@ -379,13 +395,16 @@ class Ensemble:
         F = self.meta.predict(Ztest)
         return F @ self.weightsBest_
 
+    def predictConvex(self, Ztest):
+        F = self.meta.predict(Ztest)
+        return F @ self.weightsConvex_
+
 
 def experiment_dr(dgp, *, n=None, semi_synth=False, simple_synth=False,
                   scale=1, true_f=None, max_depth=3, random_state=123,
-                  reg=lambda: RandomForestRegressor(random_state=123, min_impurity_decrease=0.0001,
-                                                    max_depth=7, min_samples_leaf=20, min_weight_fraction_leaf=0.01),
-                  clf=lambda: RandomForestClassifier(random_state=123, min_impurity_decrease=0.0001,
-                                                     max_depth=7, min_samples_leaf=20, min_weight_fraction_leaf=0.01),
+                  reg=xgb_reg,
+                  clf=xgb_clf,
+                  ensemble_methods=['train', 'val', 'split', 'cfit', '3way'],
                   model_select=False):
     print(random_state)
     np.random.seed(random_state)
@@ -475,6 +494,10 @@ def experiment_dr(dgp, *, n=None, semi_synth=False, simple_synth=False,
                                 ('split', 'split_on_val'),
                                 ('cfit', 'cfit_on_val'),
                                 ('3way', '3way')]:
+
+        if name not in ensemble_methods:
+            continue
+
         print(f'Fitting ensemble {name} on dval')
         ensemble[name] = Ensemble(
             meta=meta, nuisance_mode=nuisance_mode, model_select=model_select)
@@ -508,10 +531,13 @@ def experiment_dr(dgp, *, n=None, semi_synth=False, simple_synth=False,
     for name, ensemble_model in ensemble.items():
         tQ = ensemble_model.predictQ(Ztest)
         tBest = ensemble_model.predictBest(Ztest)
+        tConvex = ensemble_model.predictConvex(Ztest)
         mses[f'Q{name}'] = mse(cate(Ztest), tQ)
         mses[f'Best{name}'] = mse(cate(Ztest), tBest)
+        mses[f'Convex{name}'] = mse(cate(Ztest), tConvex)
         cates[f'Q{name}'] = tQ[subsample]
         cates[f'Best{name}'] = tBest[subsample]
+        cates[f'Convex{name}'] = tConvex[subsample]
         if g0 is not None:
             nuisance_subsample = np.sort(
                 np.random.choice(ensemble_model.Zval.shape[0], 100))
@@ -531,10 +557,9 @@ def experiment_dr(dgp, *, n=None, semi_synth=False, simple_synth=False,
 
 def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
                scale=1, true_f=None, max_depth=3, random_state=123,
-               reg=lambda: RandomForestRegressor(random_state=123, min_impurity_decrease=0.0001,
-                                                 max_depth=7, min_samples_leaf=20, min_weight_fraction_leaf=0.01),
-               clf=lambda: RandomForestClassifier(random_state=123, min_impurity_decrease=0.0001,
-                                                  max_depth=7, min_samples_leaf=20, min_weight_fraction_leaf=0.01),
+               reg=xgb_reg,
+               clf=xgb_clf,
+               wreg=xgb_wreg,
                model_select=False,
                ensemble_methods=['train', 'val', 'split', 'cfit', '3way'],
                prior_dict=None,
@@ -552,7 +577,7 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
     # Train on training set all meta-learners
     #############################################
     print('Fitting meta learners on dtrain')
-    meta = MetaLearners(reg, clf).fit(Z, D, Y)
+    meta = MetaLearners(reg, clf, wreg).fit(Z, D, Y)
     
     prior = None if prior_dict is None else meta.get_prior(prior_dict)
 
@@ -588,7 +613,7 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
     # Meta learners on all dtrain and dval
     ####################################################
     print('Fitting meta learners on dtrain union dval')
-    meta_all = MetaLearners(reg, clf).fit(
+    meta_all = MetaLearners(reg, clf, wreg).fit(
         np.vstack([Z, Zval]), np.concatenate((D, Dval)), np.concatenate((Y, Yval)))
 
     ####################################################
@@ -603,7 +628,8 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
             'DR': mse(cate(Ztest), F[:, 3]),
             'R': mse(cate(Ztest), F[:, 4]),
             'X': mse(cate(Ztest), F[:, 5]),
-            'DRX': mse(cate(Ztest), F[:, 6])}
+            'DRX': mse(cate(Ztest), F[:, 6]),
+            'DAX': mse(cate(Ztest), F[:, 7])}
     cates = {'T': F[subsample, 0],
              'S': F[subsample, 1],
              'IPS': F[subsample, 2],
@@ -611,6 +637,7 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
              'R': F[subsample, 4],
              'X': F[subsample, 5],
              'DRX': F[subsample, 6],
+             'DAX': F[subsample, 7],
              'True': cate(Ztest[subsample]),
              'Ztest': Ztest[subsample]}
     nuisance_metrics = {}
@@ -621,10 +648,13 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
     for name, ensemble_model in ensemble.items():
         tQ = ensemble_model.predictQ(Ztest)
         tBest = ensemble_model.predictBest(Ztest)
+        tConvex = ensemble_model.predictConvex(Ztest)
         mses[f'Q{name}'] = mse(cate(Ztest), tQ)
         mses[f'Best{name}'] = mse(cate(Ztest), tBest)
+        mses[f'Convex{name}'] = mse(cate(Ztest), tConvex)
         cates[f'Q{name}'] = tQ[subsample]
         cates[f'Best{name}'] = tBest[subsample]
+        cates[f'Convex{name}'] = tConvex[subsample]
         if g0 is not None:
             nuisance_subsample = np.sort(
                 np.random.choice(ensemble_model.Zval.shape[0], 100))
@@ -647,7 +677,8 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
             'DRall': mse(cate(Ztest), F[:, 3]),
             'Rall': mse(cate(Ztest), F[:, 4]),
             'Xall': mse(cate(Ztest), F[:, 5]),
-            'DRXall': mse(cate(Ztest), F[:, 6])}
+            'DRXall': mse(cate(Ztest), F[:, 6]),
+            'DAXall': mse(cate(Ztest), F[:, 7])}
     cates = {**cates,
              'Tall': F[subsample, 0],
              'Sall': F[subsample, 1],
@@ -655,6 +686,7 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
              'DRall': F[subsample, 3],
              'Rall': F[subsample, 4],
              'Xall': F[subsample, 5],
-             'DRXall': F[subsample, 6]}
+             'DRXall': F[subsample, 6],
+             'DAXall': F[subsample, 7]}
 
     return mses, cates, nuisance_metrics
