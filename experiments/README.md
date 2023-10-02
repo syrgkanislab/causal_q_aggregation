@@ -8,9 +8,11 @@ To run 100 experiments on all semi-synthetic datasets except for the criteo data
 
 Since each instance of experiment on criteo dataset takes longer to run, they are ran with a job array with slurm that runs 100 jobs concurrently.
 To run a single experiment on the criteo dataset with simple CATE:
+
 ``` python3 exp_single.py -p RESULT_PATH/criteo_true_${SLURM_ARRAY_TASK_ID}.jbl -r ${SLURM_ARRAY_TASK_ID} -u 0.5 -s``` 
 
 To run a single experiment on the criteo dataset with fitted CATE:
+
 ``` python3 exp_single.py -p RESULT_PATH/criteo_false_${SLURM_ARRAY_TASK_ID}.jbl -r ${SLURM_ARRAY_TASK_ID} -u 0.5``` 
 
 
