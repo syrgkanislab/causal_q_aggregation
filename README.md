@@ -12,7 +12,7 @@ https://github.com/gsbDBI/ExperimentData/blob/master/Welfare/ProcessedData/welfa
 STAR Dataset:
 https://github.com/gsbDBI/ExperimentData/blob/master/Project%20STAR/STAR_Students.tab
 
-Poverty Dataset；
+Poverty Dataset:
 https://github.com/gsbDBI/ExperimentData/tree/master/Poverty
 
 Criteo Uplift Dataset:
