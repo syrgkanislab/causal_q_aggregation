@@ -1,7 +1,7 @@
 from sklearn.model_selection import train_test_split
 import xgboost as xgb
 from xgboost import XGBRegressor, XGBClassifier
-from aggregation_XGBoost import experiment
+from aggregation import experiment
 import numpy as np
 import pandas as pd
 import joblib
