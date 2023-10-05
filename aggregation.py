@@ -294,7 +294,7 @@ class Ensemble:
 
     def __init__(self, *, meta, nuisance_mode,
                  model_select=True, g0=None, g1=None, mu=None,
-                 prior=None, beta=None):
+                 prior=None, beta=None, nu = None):
         self.meta = meta
         self.nuisance_mode = nuisance_mode
         self.model_select = model_select
@@ -303,6 +303,7 @@ class Ensemble:
         self.mu = mu
         self.prior = prior
         self.beta = beta
+        self.nu = nu
 
     def fit(self, Zval, Dval, Yval):
         meta = self.meta
@@ -374,7 +375,7 @@ class Ensemble:
         Ydrval = (Yval - gpreds) * (Dval - m) / cov + g1preds - g0preds
 
         F = meta.predict(Zval)
-        self.weightsQ_ = qagg(F, Ydrval, prior=self.prior, beta=self.beta)
+        self.weightsQ_ = qagg(F, Ydrval, prior=self.prior, beta=self.beta, nu=self.nu)
         self.weightsBest_ = np.zeros(self.weightsQ_.shape)
         self.weightsBest_[np.argmin(
             np.mean((Ydrval.reshape(-1, 1) - F)**2, axis=0))] = 1.0
@@ -563,7 +564,7 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
                model_select=False,
                ensemble_methods=['train', 'val', 'split', 'cfit', '3way'],
                prior_dict=None,
-               beta=None):
+               beta=None, nu=0.5):
 
     np.random.seed(random_state)
     dtrain, dval, dtest, cate, g0, g1, mu = gen_data(dgp, n=n, semi_synth=semi_synth, simple_synth=simple_synth,
@@ -597,7 +598,7 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
         print(f'Fitting ensemble {name} on dval')
         ensemble[name] = Ensemble(
             meta=meta, nuisance_mode=nuisance_mode, model_select=model_select,
-            prior=prior, beta=beta
+            prior=prior, beta=beta, nu=nu
         )
         ensemble[name].fit(Zval, Dval, Yval)
 
@@ -605,7 +606,7 @@ def experiment(dgp, *, n=None, semi_synth=False, simple_synth=False,
         print('Fitting oracle ensemble on dval')
         ensemble['oracle'] = Ensemble(
             meta=meta, nuisance_mode='oracle', g0=g0, g1=g1, mu=mu,
-            prior=prior, beta=beta
+            prior=prior, beta=beta, nu=nu
         )
         ensemble['oracle'].fit(Zval, Dval, Yval)
 
